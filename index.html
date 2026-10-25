@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MRCHND</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #1a1a1d; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #1e7068; overflow: hidden; }
   #scene { position: fixed; inset: 0; }
   canvas { display: block; }
 </style>
@@ -16,68 +16,137 @@
 
 <script>
 new p5((p) => {
-  const BG     = [26, 26, 29];
-  const TINT   = [225, 228, 235];
-  const ALPHA  = 9;
-  const POINTS = 5500;
-  const DT     = 0.055;
-  const DAMP   = 0.0042;
-  const DRIFT  = 0.0022;
-  const F      = [2.01, 3.0, 3.0, 2.01];
-  const INNER  = 0.42;
+  const BG = [30, 112, 104];
+  const INNER = [60, 224, 209];
+  const OUTER = [210, 230, 228];
+  const TAU = Math.PI * 2;
 
-  let R, cx, cy, phase = 0;
+  const HOLE = 0.087;
+  const GAP = 0.0075;
+  const COVER = 1;
+  const NOISE_SCALE = 3.0;
+  const NOISE_FACTOR = 10;
+  const FACTOR_QUAD = 0.24;
+  const Z_SPEED = 0.07;
+  const SEED = 5;
+  const SPACING = 9;
+  const MAX_VERTICES = 640;
+  const INTRO_STAGGER_MS = 28;
+  const INTRO_RING_MS = 1600;
+
+  const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SPEED = calm ? 0.25 : 1;
+
+  const PX = new Float32Array(MAX_VERTICES + 2);
+  const PY = new Float32Array(MAX_VERTICES + 2);
+  const ptr = { x: 0, y: 0, tx: 0, ty: 0 };
+
+  let ctx, cx, cy, U, count = 1, detail = 1, ema = 16.7, frame = 0;
 
   function layout() {
     cx = p.width / 2;
     cy = p.height / 2;
-    R = Math.min(p.width, p.height) * 0.2;
+    U = Math.max(Math.min(p.width, p.height), 0.62 * Math.max(p.width, p.height));
+    const reach = COVER * 0.5 * Math.hypot(p.width, p.height);
+    const a = 0.15 * FACTOR_QUAD * (U / 800);
+    const b = GAP * U;
+    const c = HOLE * U - reach;
+    count = Math.max(10, Math.ceil((-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a)));
   }
 
   p.setup = () => {
+    p.pixelDensity(Math.min(2, window.devicePixelRatio || 1));
     p.createCanvas(p.windowWidth, p.windowHeight);
+    p.noiseSeed(SEED);
+    p.noiseDetail(3, 0.45);
+    ctx = p.drawingContext;
     layout();
-    p.strokeWeight(1);
-    p.noFill();
   };
 
   p.windowResized = () => {
     p.resizeCanvas(p.windowWidth, p.windowHeight);
+    ctx = p.drawingContext;
     layout();
   };
 
-  function trace(scale, mirror, dir, rot) {
-    const p1 = dir * phase, p2 = dir * phase * 0.7;
-    const p3 = -dir * phase * 0.5, p4 = dir * phase * 1.3;
-    const cosr = Math.cos(rot), sinr = Math.sin(rot);
-
-    let px = null, py = null;
-    for (let i = 0; i < POINTS; i++) {
-      const t = i * DT;
-      const env = Math.exp(-DAMP * t);
-      const x = (Math.sin(F[0] * t + p1) + Math.sin(F[1] * t + p2)) * env;
-      const y = (Math.sin(F[2] * t + p3) + Math.sin(F[3] * t + p4)) * env * mirror;
-      const rx = x * cosr - y * sinr;
-      const ry = x * sinr + y * cosr;
-      const sx = cx + rx * scale;
-      const sy = cy + ry * scale;
-      if (px !== null) p.line(px, py, sx, sy);
-      px = sx; py = sy;
+  window.addEventListener('pointermove', (e) => {
+    const nx = e.clientX / window.innerWidth - 0.5;
+    const ny = e.clientY / window.innerHeight - 0.5;
+    if (Number.isFinite(nx) && Number.isFinite(ny)) {
+      ptr.tx = Math.max(-0.5, Math.min(0.5, nx));
+      ptr.ty = Math.max(-0.5, Math.min(0.5, ny));
     }
+  }, { passive: true });
+
+  function ease(t) {
+    const c = Math.max(0, Math.min(1, t));
+    return c * c * (3 - 2 * c);
+  }
+
+  function strokeRing(m) {
+    ctx.beginPath();
+    ctx.moveTo((PX[m - 1] + PX[0]) * 0.5, (PY[m - 1] + PY[0]) * 0.5);
+    for (let i = 0; i < m; i++) {
+      const k = i + 1 === m ? 0 : i + 1;
+      ctx.quadraticCurveTo(PX[i], PY[i], (PX[i] + PX[k]) * 0.5, (PY[i] + PY[k]) * 0.5);
+    }
+    ctx.closePath();
+    ctx.stroke();
   }
 
   p.draw = () => {
+    const now = p.millis();
+    const s = (now / 1000) * SPEED;
+
+    ptr.x += (ptr.tx - ptr.x) * 0.03;
+    ptr.y += (ptr.ty - ptr.y) * 0.03;
+
+    if (p.deltaTime < 100) ema += (p.deltaTime - ema) * 0.05;
+    if (++frame % 45 === 0) {
+      if (ema > 22 && detail > 0.5) detail = Math.max(0.5, detail - 0.25);
+      else if (ema < 17.5 && detail < 1) detail = Math.min(1, detail + 0.125);
+    }
+
     p.background(BG[0], BG[1], BG[2]);
-    p.stroke(TINT[0], TINT[1], TINT[2], ALPHA);
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 1.3;
 
-    trace(R, 1, 1, 0);
-    trace(R, -1, 1, 0);
+    const u = U / 800;
+    const r0 = HOLE * U;
+    const gap = GAP * U;
+    const tz = s * Z_SPEED;
+    const ox = cx - ptr.x * 14;
+    const oy = cy - ptr.y * 14;
+    const nox = 10 + ptr.x * 0.5;
+    const noy = 10 + ptr.y * 0.5;
+    const spacing = SPACING / detail;
 
-    const innerRot = phase * 0.25;
-    trace(R * INNER, 1, -1, innerRot);
-    trace(R * INNER, -1, -1, innerRot);
+    for (let j = 0; j < count; j++) {
+      const k = j / (count - 1);
+      const appear = ease((now - j * INTRO_STAGGER_MS) / INTRO_RING_MS);
+      if (appear <= 0) break;
 
-    phase += DRIFT;
+      const r = r0 + j * gap;
+      const m = Math.max(48, Math.min(MAX_VERTICES, Math.round((TAU * r) / spacing)));
+      const factor = (NOISE_FACTOR + FACTOR_QUAD * j * j) * u * appear;
+
+      for (let i = 0; i < m; i++) {
+        const th = (TAU * i) / m;
+        const c = Math.cos(th);
+        const sn = Math.sin(th);
+        const bx = r * c;
+        const by = r * sn;
+        const n = p.noise(nox + (bx / U) * NOISE_SCALE, noy + (by / U) * NOISE_SCALE, tz);
+        PX[i] = ox + bx + n * factor * c;
+        PY[i] = oy + by + n * factor * sn;
+      }
+
+      const rr = Math.round(INNER[0] + (OUTER[0] - INNER[0]) * k);
+      const gg = Math.round(INNER[1] + (OUTER[1] - INNER[1]) * k);
+      const bb = Math.round(INNER[2] + (OUTER[2] - INNER[2]) * k);
+      ctx.strokeStyle = 'rgba(' + rr + ',' + gg + ',' + bb + ',' + appear.toFixed(3) + ')';
+      strokeRing(m);
+    }
   };
 }, 'scene');
 </script>
